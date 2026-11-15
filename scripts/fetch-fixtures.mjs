@@ -1,6 +1,6 @@
 // Downloads test files from alphaTab's own test data. They are not committed.
 import { mkdir, writeFile, access } from 'node:fs/promises';
-const base = 'https://raw.githubusercontent.com/CoderLine/alphaTab/main/packages/alphatab/test-data/';
+const base = 'https://raw.githubusercontent.com/CoderLine/alphaTab/9f1aa10460df1b326123d28a2222f7b20d081e61/packages/alphatab/test-data/';
 const files = ['conversion/full-song.gp', 'conversion/full-song.gpx', 'conversion/full-song.gp5'];
 await mkdir('test/fixtures', { recursive: true });
 for (const f of files) {

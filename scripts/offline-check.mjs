@@ -2,20 +2,23 @@
 // load once online, import a tab, go offline, reload, open it and play.
 // Usage: npm run build && npm run fetch-fixtures && npm run test:offline
 import { spawn } from 'node:child_process';
-import { chromium } from '@playwright/test';
+import { chromium, webkit } from '@playwright/test';
 
 const PORT = 4179;
-const URL = `http://localhost:${PORT}/guitar-tabber/`;
-const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe' });
+const URL = process.env.APP_URL ?? `http://localhost:${PORT}/guitar-tabber/`;
+const server = process.env.APP_URL ? null : spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'pipe' });
 const fail = (msg) => { console.error('FAIL:', msg); cleanup(1); };
 let browser;
 process.on('unhandledRejection', (e) => fail(e?.message ?? String(e)));
-async function cleanup(code) { await browser?.close(); server.kill(); process.exit(code); }
+async function cleanup(code) { await browser?.close(); server?.kill(); process.exit(code); }
 
-await new Promise((resolve) => server.stdout.on('data', (d) => d.toString().includes('localhost') && resolve()));
+if (server) await new Promise((resolve) => server.stdout.on('data', (d) => d.toString().includes('localhost') && resolve()));
 
-browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
-const context = await browser.newContext({ viewport: { width: 1180, height: 820 } });
+const engines = { chromium, webkit };
+const engine = engines[process.env.BROWSER ?? 'chromium'];
+browser = await engine.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
+// iPad Air-ish landscape viewport with touch input.
+const context = await browser.newContext({ viewport: { width: 1180, height: 820 }, hasTouch: true });
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
@@ -94,6 +97,24 @@ const loopTime = await page.locator('.time').textContent();
 const barNow = await page.locator('.bar-pos').textContent();
 console.log('after 8 s with loop on:', loopTime, barNow);
 if (barNow !== loopLabel) fail('playback left the loop');
+// Touch: tapping a bar seeks without starting a loop; tap, From, tap, To sets a range.
+await page.getByRole('button', { name: 'Pause' }).click();
+await page.getByRole('button', { name: 'Clear loop range' }).click();
+await page.getByRole('button', { name: 'Loop', exact: true }).click();
+if ((await page.getByRole('button', { name: 'Loop', exact: true }).getAttribute('aria-pressed')) !== 'false') fail('loop did not turn off');
+await page.locator('.score-scroll').evaluate((el) => el.scrollTo(0, 0));
+const box = await page.locator('.at-surface').boundingBox();
+const tapAt = async (fx, y) => { await page.touchscreen.tap(box.x + box.width * fx, box.y + y); await page.waitForTimeout(400); return page.locator('.bar-pos').textContent(); };
+const firstTap = await tapAt(0.25, 460);
+const afterTap = { bar: firstTap, loop: await page.getByRole('button', { name: 'Loop', exact: true }).getAttribute('aria-pressed'), label: await page.locator('.loop-label').textContent() };
+console.log('after tap:', afterTap);
+if (afterTap.bar === 'Bar 2' || afterTap.loop !== 'false' || afterTap.label !== 'Whole song') fail('a tap should seek without starting a loop');
+await page.getByRole('button', { name: 'From', exact: true }).click();
+const secondTap = await tapAt(0.75, 650);
+await page.getByRole('button', { name: 'To', exact: true }).click();
+const rangeLabel = await page.locator('.loop-label').textContent();
+console.log('tap From, tap To:', firstTap, '->', secondTap, '=>', rangeLabel);
+if (!/^Bars \d+–\d+$/.test(rangeLabel)) fail('tap-based loop range failed');
 if (errors.length) fail('page errors: ' + errors.join(' | '));
 console.log('PASS');
 cleanup(0);
