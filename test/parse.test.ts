@@ -12,6 +12,8 @@ describe.skipIf(!have)('Guitar Pro import (run npm run fetch-fixtures first)', (
       const info = inspectScore(new Uint8Array(readFileSync(`${dir}/${f}`)), f);
       expect(info.title).toBe('The crow, the owl and the dove');
       expect(info.trackCount).toBe(11);
+      // First 6-string tab track, skipping the vocal and choir staves.
+      expect(info.defaultTrack).toBe(3);
     });
   }
   it('rejects a file that is not a score', () => {

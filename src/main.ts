@@ -7,13 +7,18 @@ import { renderPlayer } from './player';
 
 const app = document.getElementById('app')!;
 let cleanup: (() => void) | null = null;
+let routeToken = 0;
 
 async function route(): Promise<void> {
+  const token = ++routeToken;
   cleanup?.();
   cleanup = null;
   const match = location.hash.match(/^#\/song\/(.+)$/);
   if (match) {
-    cleanup = await renderPlayer(app, decodeURIComponent(match[1]), () => (location.hash = '#/'));
+    const dispose = await renderPlayer(app, decodeURIComponent(match[1]), () => (location.hash = '#/'), () => token !== routeToken);
+    // The user navigated away while the song was loading.
+    if (token !== routeToken) dispose();
+    else cleanup = dispose;
   } else {
     cleanup = renderLibrary(app, (id) => (location.hash = `#/song/${encodeURIComponent(id)}`));
   }

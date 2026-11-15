@@ -33,7 +33,9 @@ await page.waitForURL(/#\/song\//);
 await page.waitForSelector('.score-surface svg, .score-surface .at-surface', { timeout: 30000 });
 await page.waitForFunction(() => document.querySelector('.score-overlay')?.hidden === true, null, { timeout: 30000 });
 const songUrl = page.url();
-console.log('online render ok');
+const shownOnOpen = await page.locator('.tracks li.shown .track-name span:first-child').allTextContents();
+console.log('online render ok; track shown on first open:', shownOnOpen);
+if (shownOnOpen.join() !== 'Emmpu(Acoustic)') fail('first open did not show the default guitar track');
 
 await context.setOffline(true);
 await page.goto(URL);
@@ -41,9 +43,9 @@ await page.waitForSelector('.song', { timeout: 15000 });
 console.log('offline library ok:', await page.locator('.song-title').first().textContent());
 await page.goto(songUrl);
 await page.waitForFunction(() => document.querySelector('.score-overlay')?.hidden === true, null, { timeout: 30000 });
-const glyphs = await page.locator('.score-surface .at-surface *').count();
-if (glyphs < 50) fail(`offline score looks empty (${glyphs} elements)`);
-console.log('offline render ok, elements:', glyphs);
+const glyphs = await page.evaluate(() => document.querySelector('.at-surface')?.getBoundingClientRect().height ?? 0);
+if (glyphs < 1000) fail(`offline score looks empty (surface ${glyphs}px tall)`);
+console.log('offline render ok, surface height:', Math.round(glyphs));
 
 // Tracks drawer lists all parts; show only the second guitar part.
 await page.getByRole('button', { name: 'Tracks' }).click();
@@ -54,7 +56,7 @@ await page.waitForFunction(() => document.querySelector('.score-overlay')?.hidde
 await page.getByRole('button', { name: 'Tracks' }).click();
 
 // Tempo + click, then play offline.
-await page.getByRole('button', { name: 'Click' }).click();
+await page.getByRole('button', { name: 'Click', exact: true }).click();
 await page.getByRole('button', { name: 'Slower' }).click();
 const bpm = await page.locator('.bpm-value').textContent();
 console.log('bpm after one step slower:', bpm);
@@ -66,14 +68,32 @@ console.log('time after 3 s of play:', time);
 if (!/^0:0[1-9]|^0:[1-9]/.test(time)) fail(`playback did not advance offline (${time})`);
 await page.screenshot({ path: process.env.SHOT ?? 'test-results/offline-player.png' });
 
-// Settings persisted?
+// Loop the bar playback is in.
 await page.getByRole('button', { name: 'Pause' }).click();
+await page.getByRole('button', { name: 'From', exact: true }).click();
+await page.getByRole('button', { name: 'To', exact: true }).click();
+const loopLabel = await page.locator('.loop-label').textContent();
+console.log('loop label:', loopLabel, 'loop on:', await page.getByRole('button', { name: 'Loop', exact: true }).getAttribute('aria-pressed'));
+if (!/^Bar \d+$/.test(loopLabel)) fail('loop range not set');
+// Settings persisted?
 await page.waitForTimeout(800);
 await page.reload();
 await page.waitForFunction(() => document.querySelector('.score-overlay')?.hidden === true, null, { timeout: 30000 });
-const kept = { bpm: await page.locator('.bpm-value').textContent(), click: await page.getByRole('button', { name: 'Click' }).getAttribute('aria-pressed') };
+const kept = {
+  bpm: await page.locator('.bpm-value').textContent(),
+  click: await page.getByRole('button', { name: 'Click', exact: true }).getAttribute('aria-pressed'),
+  loop: await page.locator('.loop-label').textContent(),
+};
 console.log('after reload:', kept);
-if (kept.bpm !== bpm || kept.click !== 'true') fail('settings were not saved');
+if (kept.bpm !== bpm || kept.click !== 'true' || kept.loop !== loopLabel) fail('settings were not saved');
+// With the loop on, playback should stay inside that bar.
+await page.waitForFunction(() => document.querySelector('.play')?.title === '', null, { timeout: 30000 });
+await page.getByRole('button', { name: 'Play' }).click();
+await page.waitForTimeout(8000);
+const loopTime = await page.locator('.time').textContent();
+const barNow = await page.locator('.bar-pos').textContent();
+console.log('after 8 s with loop on:', loopTime, barNow);
+if (barNow !== loopLabel) fail('playback left the loop');
 if (errors.length) fail('page errors: ' + errors.join(' | '));
 console.log('PASS');
 cleanup(0);

@@ -2,6 +2,7 @@ import * as alphaTab from '@coderline/alphatab';
 import { getSong, getSongBytes, updateSong, type SongMeta } from './db';
 import { formatTime, h, toast } from './dom';
 import { mixFor, normalizeSettings, type SongSettings, type StaveMode } from './songSettings';
+import { defaultTrack } from './importer';
 import { bpmRange, clampBpm, speedForBpm } from './tempo';
 
 const BASE = import.meta.env.BASE_URL;
@@ -27,9 +28,15 @@ function preferPlaybackAudioSession(): void {
   }
 }
 
-export async function renderPlayer(root: HTMLElement, songId: string, back: () => void): Promise<() => void> {
+export async function renderPlayer(
+  root: HTMLElement,
+  songId: string,
+  back: () => void,
+  isStale: () => boolean,
+): Promise<() => void> {
   const song = await getSong(songId);
   const bytes = await getSongBytes(songId);
+  if (isStale()) return () => {};
   if (!song || !bytes) {
     toast('That tab is no longer on this device');
     back();
@@ -45,7 +52,8 @@ class PlayerView {
   private score: alphaTab.model.Score | null = null;
   private baseBpm = 120;
   private currentBar = 0;
-  private settingRange = false;
+  /** Range we last sent to alphaTab, so its echo event is not mistaken for a user selection. */
+  private sentRange: { startTick: number; endTick: number } | null = null;
   private wakeLock: { release(): Promise<void> } | null = null;
   private saveTimer: number | undefined;
 
@@ -160,6 +168,7 @@ class PlayerView {
     e.viewBtn.addEventListener('click', () => this.toggleViewMenu());
     document.addEventListener('keydown', this.onKey);
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('pagehide', this.flush);
   }
 
   // ---------- alphaTab ----------
@@ -178,6 +187,8 @@ class PlayerView {
         soundFont: `${BASE}soundfont/sonivox.sf2`,
         scrollElement: this.el.scroller,
         enablePlaybackRangeSelection: true,
+        // Tapping a bar seeks there without dropping the loop range.
+        resetPlaybackRangeOnClick: false,
       },
     });
     this.api = api;
@@ -186,7 +197,10 @@ class PlayerView {
       this.score = score;
       this.baseBpm = score.tempo || 120;
       if (!this.s.shownTracks.length || this.s.shownTracks.some((i) => i >= score.tracks.length)) {
+        // Older records without a stored default: alphaTab drew track 0, so redraw the right one.
         this.s.shownTracks = [defaultTrack(score)];
+        if (this.s.shownTracks[0] !== 0) api.renderTracks([score.tracks[this.s.shownTracks[0]]]);
+        this.save();
       }
       this.setupBpmSlider();
       this.renderDrawer();
@@ -197,6 +211,8 @@ class PlayerView {
     });
     api.renderFinished.on(() => {
       this.el.overlay.hidden = true;
+      // Redrawing (track or view change) drops the loop highlight; put it back.
+      this.applyLoop();
     });
     api.soundFontLoad.on((e) => {
       if (e.total) this.el.play.title = `Loading sounds ${Math.round((e.loaded / e.total) * 100)}%`;
@@ -220,16 +236,18 @@ class PlayerView {
     api.playedBeatChanged.on((beat) => this.setCurrentBar(beat));
     api.beatMouseDown.on((beat) => this.setCurrentBar(beat));
     api.playbackRangeChanged.on((e) => {
-      if (this.settingRange) return;
       const range = e.playbackRange;
-      if (!range) {
-        this.s.loopBars = null;
-      } else {
-        const start = this.barAtTick(range.startTick);
-        const end = this.barAtTick(Math.max(range.startTick, range.endTick - 1));
-        if (start !== null && end !== null) this.s.loopBars = { start, end };
-      }
-      this.updateLoopUi();
+      const sent = this.sentRange;
+      // alphaTab echoes ranges we set ourselves (asynchronously, via the worker).
+      if (sameRange(range, sent)) return;
+      if (!range) return; // only our own code clears the range
+      const start = this.barAtTick(range.startTick);
+      const end = this.barAtTick(Math.max(range.startTick, range.endTick - 1));
+      if (start === null || end === null) return;
+      // A drag selection on the score: loop it.
+      this.s.loopBars = { start, end };
+      this.s.loop = true;
+      this.applyLoop();
       this.save();
     });
     api.error.on((err) => {
@@ -333,31 +351,31 @@ class PlayerView {
     return null;
   }
 
+  /**
+   * Sends the loop to alphaTab. The range only applies while Loop is on, so
+   * with Loop off the whole song plays and the saved bars wait for next time.
+   * Repeated bars loop on their first pass.
+   */
   private applyLoop(): void {
-    const api = this.api;
-    if (!api) return;
-    api.isLooping = this.s.loop;
-    this.settingRange = true;
-    try {
-      const bars = this.s.loopBars;
-      const lookups = api.tickCache?.masterBars;
-      if (!bars || !lookups) {
-        api.playbackRange = null;
-        api.clearPlaybackRangeHighlight();
-      } else {
-        const first = lookups.find((mb) => mb.masterBar.index === bars.start);
-        const last = first && lookups.find((mb) => mb.masterBar.index === bars.end && mb.start >= first.start);
-        if (first && last) {
-          api.playbackRange = { startTick: first.start, endTick: last.end } as alphaTab.synth.PlaybackRange;
-          const beats = this.edgeBeats(bars.start, bars.end);
-          if (beats) api.highlightPlaybackRange(beats[0], beats[1]);
-        }
-      }
-    } finally {
-      this.settingRange = false;
-    }
     setPressed(this.el.loop, this.s.loop);
     this.updateLoopUi();
+    const api = this.api;
+    const lookups = api?.tickCache?.masterBars;
+    if (!api || !lookups) return; // midiLoaded calls this again once timing data exists
+    api.isLooping = this.s.loop;
+    const bars = this.s.loop ? this.s.loopBars : null;
+    const first = bars && lookups.find((mb) => mb.masterBar.index === bars.start);
+    const last = bars && first && lookups.find((mb) => mb.masterBar.index === bars.end && mb.start >= first.start);
+    if (!bars || !first || !last) {
+      this.sentRange = null;
+      api.playbackRange = null;
+      api.clearPlaybackRangeHighlight();
+      return;
+    }
+    this.sentRange = { startTick: first.start, endTick: last.end };
+    api.playbackRange = { ...this.sentRange } as alphaTab.synth.PlaybackRange;
+    const beats = this.edgeBeats(bars.start, bars.end);
+    if (beats) api.highlightPlaybackRange(beats[0], beats[1]);
   }
 
   private edgeBeats(start: number, end: number): [Beat, Beat] | null {
@@ -564,6 +582,7 @@ class PlayerView {
   // ---------- misc ----------
 
   private onKey = (e: KeyboardEvent): void => {
+    if (e.target instanceof HTMLButtonElement) return;
     if (e.target instanceof HTMLInputElement && e.target.type !== 'range') return;
     if (e.code === 'Space') {
       e.preventDefault();
@@ -572,6 +591,7 @@ class PlayerView {
   };
 
   private onVisibility = (): void => {
+    if (document.visibilityState === 'hidden') this.flush();
     if (document.visibilityState === 'visible' && this.api?.playerState === alphaTab.synth.PlayerState.Playing) {
       void this.setWakeLock(true);
     }
@@ -592,19 +612,30 @@ class PlayerView {
 
   private save(): void {
     clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(() => {
-      void updateSong(this.song.id, { settings: structuredClone(this.s) });
-    }, 300);
+    this.saveTimer = window.setTimeout(this.flush, 300);
   }
 
-  dispose(): void {
+  private flush = (): void => {
     clearTimeout(this.saveTimer);
     void updateSong(this.song.id, { settings: structuredClone(this.s) });
+  };
+
+  dispose(): void {
+    this.flush();
     document.removeEventListener('keydown', this.onKey);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('pagehide', this.flush);
     void this.setWakeLock(false);
     this.api?.destroy();
   }
+}
+
+function sameRange(
+  a: { startTick: number; endTick: number } | null,
+  b: { startTick: number; endTick: number } | null,
+): boolean {
+  if (!a || !b) return a === b;
+  return a.startTick === b.startTick && a.endTick === b.endTick;
 }
 
 function setPressed(el: HTMLElement, on: boolean): void {
@@ -625,10 +656,6 @@ function holdToRepeat(el: HTMLElement, fn: () => void): void {
   for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) el.addEventListener(ev, stop);
 }
 
-function defaultTrack(score: alphaTab.model.Score): number {
-  const guitar = score.tracks.find((t) => !t.staves[0]?.isPercussion && t.staves.some((s) => s.showTablature && s.tuning.length >= 6));
-  return (guitar ?? score.tracks.find((t) => !t.staves[0]?.isPercussion) ?? score.tracks[0]).index;
-}
 
 function trackKind(track: Track): string {
   const staff = track.staves[0];

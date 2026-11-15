@@ -57,16 +57,19 @@ export function newId(): string {
 }
 
 export async function addSong(
-  info: Omit<SongMeta, 'id' | 'addedAt' | 'lastOpenedAt' | 'settings'>,
+  info: Omit<SongMeta, 'id' | 'addedAt' | 'lastOpenedAt' | 'settings'> & { defaultTrack?: number },
   bytes: ArrayBuffer,
 ): Promise<SongMeta> {
   const db = await openDb();
+  const { defaultTrack, ...rest } = info;
+  const settings = defaultSettings();
+  if (defaultTrack !== undefined) settings.shownTracks = [defaultTrack];
   const meta: SongMeta = {
-    ...info,
+    ...rest,
     id: newId(),
     addedAt: Date.now(),
     lastOpenedAt: null,
-    settings: defaultSettings(),
+    settings,
   };
   const tx = db.transaction(['meta', 'files'], 'readwrite');
   tx.objectStore('meta').put(meta);
