@@ -1,6 +1,7 @@
 import * as alphaTab from '@coderline/alphatab';
 import { getSong, getSongBytes, updateSong, type SongMeta } from './db';
 import { formatTime, h, toast } from './dom';
+import { backButton, closeButton, icon, led } from './icons';
 import { preferPlaybackAudioSession } from './metronome';
 import { createTempoControl, type TempoControl } from './tempoControl';
 import { mixFor, normalizeSettings, type SongSettings, type StaveMode } from './songSettings';
@@ -60,14 +61,15 @@ class PlayerView {
     surface: h('div', { class: 'score-surface' }),
     scroller: h('div', { class: 'score-scroll' }),
     overlay: h('div', { class: 'score-overlay' }, 'Loading…'),
-    play: h('button', { class: 'btn transport play', 'aria-label': 'Play' }, '▶'),
-    stop: h('button', { class: 'btn transport', 'aria-label': 'Stop' }, '■'),
+    play: h('button', { class: 'btn transport play', 'aria-label': 'Play' }, icon('play', 24)),
+    stop: h('button', { class: 'btn transport stop', 'aria-label': 'Stop' }, icon('stop')),
     time: h('span', { class: 'time' }, '0:00 / 0:00'),
     bar: h('span', { class: 'bar-pos' }, 'Bar 1'),
-    click: h('button', { class: 'btn toggle' }, 'Click'),
-    countIn: h('button', { class: 'btn toggle' }, 'Count-in'),
-    loop: h('button', { class: 'btn toggle' }, 'Loop'),
-    loopRange: h('button', { class: 'btn loop-range', 'aria-label': 'Edit loop range', 'aria-haspopup': 'dialog' }, 'Set range'),
+    click: h('button', { class: 'btn switch' }, led(), h('span', {}, 'Click')),
+    countIn: h('button', { class: 'btn switch' }, led(), h('span', {}, 'Count-in')),
+    loop: h('button', { class: 'btn switch' }, led(), h('span', {}, 'Loop')),
+    loopRangeText: h('span', { class: 'loop-range-text' }, 'Set range'),
+    loopRange: h('button', { class: 'btn loop-range', 'aria-label': 'Edit loop range', 'aria-haspopup': 'dialog' }),
     tracksBtn: h('button', { class: 'btn' }, 'Tracks'),
     viewBtn: h('button', { class: 'btn' }, 'View'),
     drawer: h('aside', { class: 'drawer', hidden: true }),
@@ -99,10 +101,11 @@ class PlayerView {
   private build(): void {
     const e = this.el;
     e.scroller.append(e.surface);
+    e.loopRange.append(e.loopRangeText, icon('up', 16));
     const header = h(
       'header',
       { class: 'bar' },
-      h('button', { class: 'btn', onclick: () => this.back() }, '‹ Library'),
+      backButton(() => this.back()),
       h(
         'div',
         { class: 'titles' },
@@ -117,10 +120,10 @@ class PlayerView {
     const transport = h(
       'footer',
       { class: 'transport-bar' },
-      h('div', { class: 'group' }, e.stop, e.play, h('div', { class: 'pos' }, e.time, e.bar)),
+      h('div', { class: 'group play-group' }, e.stop, e.play, h('div', { class: 'pos' }, e.time, e.bar)),
       h('div', { class: 'group tempo' }, this.tempo.el),
-      h('div', { class: 'group', role: 'group', 'aria-label': 'Click' }, e.click, e.countIn),
-      h('div', { class: 'group', role: 'group', 'aria-label': 'Loop' }, e.loop, e.loopRange),
+      h('div', { class: 'group pair', role: 'group', 'aria-label': 'Click' }, e.click, e.countIn),
+      h('div', { class: 'group pair loop-pair', role: 'group', 'aria-label': 'Loop' }, e.loop, e.loopRange),
     );
 
     this.root.replaceChildren(
@@ -213,8 +216,9 @@ class PlayerView {
     api.midiLoaded.on(() => this.applyLoop());
     api.playerStateChanged.on((e) => {
       const playing = e.state === alphaTab.synth.PlayerState.Playing;
-      this.el.play.textContent = playing ? '❚❚' : '▶';
+      this.el.play.replaceChildren(icon(playing ? 'pause' : 'play', 24));
       this.el.play.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+      this.el.play.classList.toggle('playing', playing);
       void this.setWakeLock(playing);
     });
     api.playerPositionChanged.on((e) => {
@@ -353,9 +357,9 @@ class PlayerView {
         h(
           'div',
           { class: 'stepper' },
-          h('button', { class: 'btn small', 'aria-label': `${label} bar earlier`, onclick: () => step(-1), disabled: value === 0 }, '−'),
-          h('span', { class: 'stepper-value', 'aria-live': 'polite' }, value === null ? '–' : `Bar ${value + 1}`),
-          h('button', { class: 'btn small', 'aria-label': `${label} bar later`, onclick: () => step(1), disabled: value === this.barCount - 1 }, '+'),
+          h('button', { class: 'btn small', 'aria-label': `${label} bar earlier`, onclick: () => step(-1), disabled: value === 0 }, icon('minus')),
+          h('span', { class: 'stepper-value', 'aria-live': 'polite' }, value === null ? 'Not set' : `Bar ${value + 1}`),
+          h('button', { class: 'btn small', 'aria-label': `${label} bar later`, onclick: () => step(1), disabled: value === this.barCount - 1 }, icon('plus')),
         ),
         h(
           'button',
@@ -365,16 +369,16 @@ class PlayerView {
       );
     };
     this.el.loopPanel.replaceChildren(
-      h('div', { class: 'panel-head' }, h('strong', {}, 'Loop range')),
+      h('div', { class: 'panel-head' }, h('strong', {}, 'Loop range'), closeButton(() => this.togglePanel('loop'))),
       edgeRow('start', 'Start'),
       edgeRow('end', 'End'),
       h(
         'div',
         { class: 'loop-actions' },
         h('button', { class: 'btn small', onclick: () => this.setLoopBars({ start: cur, end: cur }) }, `Loop bar ${cur + 1} only`),
-        h('button', { class: 'btn small', 'aria-label': 'Clear loop range', onclick: () => this.setLoopBars(null), disabled: !b }, 'Clear'),
+        h('button', { class: 'btn small quiet', 'aria-label': 'Clear loop range', onclick: () => this.setLoopBars(null), disabled: !b }, 'Clear'),
       ),
-      h('p', { class: 'hint' }, 'Tap a bar on the score to move the playhead there. With a Pencil or mouse, drag across bars to select them.'),
+      h('p', { class: 'hint' }, 'Tap a bar on the score to pick it, then use it as the start or end. With a Pencil or mouse, drag across bars to loop them.'),
     );
   }
 
@@ -435,8 +439,10 @@ class PlayerView {
 
   private updateLoopUi(): void {
     const b = this.s.loopBars;
-    this.el.loopRange.textContent = b ? (b.start === b.end ? `Bar ${b.start + 1}` : `Bars ${b.start + 1}–${b.end + 1}`) : 'Set range';
+    this.el.loopRangeText.textContent = b ? (b.start === b.end ? `Bar ${b.start + 1}` : `Bars ${b.start + 1}–${b.end + 1}`) : 'Set range';
     this.el.loopRange.classList.toggle('empty', !b);
+    // A saved range waits while Loop is off; show it as dormant.
+    this.el.loopRange.classList.toggle('dormant', !!b && !this.s.loop);
   }
 
   // ---------- tracks ----------
@@ -451,8 +457,8 @@ class PlayerView {
       const showBox = h('input', { type: 'checkbox', 'aria-label': `Show ${track.name}` });
       showBox.checked = shown;
       showBox.addEventListener('change', () => this.setShown(i, showBox.checked));
-      const mute = h('button', { class: 'btn small toggle', 'aria-label': `Mute ${track.name}` }, 'M');
-      const solo = h('button', { class: 'btn small toggle', 'aria-label': `Solo ${track.name}` }, 'S');
+      const mute = h('button', { class: 'btn small toggle', 'aria-label': `Mute ${track.name}` }, 'Mute');
+      const solo = h('button', { class: 'btn small toggle', 'aria-label': `Solo ${track.name}` }, 'Solo');
       setPressed(mute, mix.mute);
       setPressed(solo, mix.solo);
       mute.addEventListener('click', () => this.setMix(i, { mute: !mixFor(this.s, i).mute }));
@@ -479,8 +485,8 @@ class PlayerView {
       h(
         'div',
         { class: 'drawer-head' },
-        h('strong', {}, 'Tracks'),
-        h('span', { class: 'muted small' }, 'Tap a name to show only that part. Muted tracks stay on screen; hidden tracks still play.'),
+        h('div', { class: 'panel-head' }, h('strong', {}, 'Tracks'), closeButton(() => this.togglePanel('tracks'))),
+        h('span', { class: 'hint' }, 'Tap a name to show only that part. Muted tracks stay on screen; hidden tracks still play.'),
       ),
       h('ul', { class: 'tracks' }, ...rows),
       h(
@@ -558,7 +564,7 @@ class PlayerView {
         h('span', { class: 'muted' }, label),
         h(
           'div',
-          { class: 'seg' },
+          { class: 'seg choice' },
           ...options.map(([value, text]) => {
             const b = h('button', { class: 'btn small toggle' }, text);
             setPressed(b, value === current);
@@ -589,9 +595,9 @@ class PlayerView {
         h(
           'div',
           { class: 'seg' },
-          h('button', { class: 'btn small', onclick: () => this.zoom(-0.1), 'aria-label': 'Zoom out' }, '−'),
+          h('button', { class: 'btn small', onclick: () => this.zoom(-0.1), 'aria-label': 'Zoom out' }, icon('minus')),
           h('span', { class: 'zoom-val' }, `${Math.round(this.s.zoom * 100)}%`),
-          h('button', { class: 'btn small', onclick: () => this.zoom(0.1), 'aria-label': 'Zoom in' }, '+'),
+          h('button', { class: 'btn small', onclick: () => this.zoom(0.1), 'aria-label': 'Zoom in' }, icon('plus')),
         ),
       ),
     );

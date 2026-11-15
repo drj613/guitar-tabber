@@ -1,5 +1,6 @@
 import { updateSong, type SongMeta } from './db';
 import { h } from './dom';
+import { backButton, icon } from './icons';
 import { Metronome } from './metronome';
 import { openPdf, type OpenedPdf, type PdfDocument } from './pdf';
 import { normalizePdfSettings, type PdfSettings } from './songSettings';
@@ -48,7 +49,7 @@ class PdfView {
     pages: h('div', { class: 'pdf-pages' }),
     overlay: h('div', { class: 'score-overlay' }, 'Opening…'),
     pageInfo: h('span', { class: 'page-info' }, ''),
-    start: h('button', { class: 'btn transport play', 'aria-label': 'Start click' }, '▶'),
+    start: h('button', { class: 'btn transport play', 'aria-label': 'Start click' }, icon('play', 24)),
     beats: h('div', { class: 'beat-dots', 'aria-hidden': 'true' }),
     perBar: h('span', { class: 'stepper-value' }, ''),
     zoomVal: h('span', { class: 'zoom-val' }, ''),
@@ -85,7 +86,7 @@ class PdfView {
     const header = h(
       'header',
       { class: 'bar' },
-      h('button', { class: 'btn', onclick: () => this.back() }, '‹ Library'),
+      backButton(() => this.back()),
       h(
         'div',
         { class: 'titles' },
@@ -97,27 +98,27 @@ class PdfView {
       h(
         'div',
         { class: 'seg', role: 'group', 'aria-label': 'Zoom' },
-        h('button', { class: 'btn small', 'aria-label': 'Zoom out', onclick: () => this.zoom(-0.1) }, '−'),
+        h('button', { class: 'btn small', 'aria-label': 'Zoom out', onclick: () => this.zoom(-0.1) }, icon('minus')),
         e.zoomVal,
-        h('button', { class: 'btn small', 'aria-label': 'Zoom in', onclick: () => this.zoom(0.1) }, '+'),
+        h('button', { class: 'btn small', 'aria-label': 'Zoom in', onclick: () => this.zoom(0.1) }, icon('plus')),
       ),
     );
 
     const footer = h(
       'footer',
       { class: 'transport-bar' },
-      h('div', { class: 'group' }, e.start, h('div', { class: 'pos' }, h('span', { class: 'time' }, 'Click'), e.beats)),
+      h('div', { class: 'group play-group' }, e.start, h('div', { class: 'pos' }, h('span', { class: 'time' }, 'Click'), e.beats)),
       h('div', { class: 'group tempo' }, tempo.el),
       h(
         'div',
-        { class: 'group', role: 'group', 'aria-label': 'Beats per bar' },
+        { class: 'group per-bar', role: 'group', 'aria-label': 'Beats per bar' },
         h('span', { class: 'group-label' }, 'Beats per bar'),
         h(
           'div',
           { class: 'stepper' },
-          h('button', { class: 'btn small', 'aria-label': 'Fewer beats per bar', onclick: () => this.setPerBar(this.s.beatsPerBar - 1) }, '−'),
+          h('button', { class: 'btn small', 'aria-label': 'Fewer beats per bar', onclick: () => this.setPerBar(this.s.beatsPerBar - 1) }, icon('minus')),
           e.perBar,
-          h('button', { class: 'btn small', 'aria-label': 'More beats per bar', onclick: () => this.setPerBar(this.s.beatsPerBar + 1) }, '+'),
+          h('button', { class: 'btn small', 'aria-label': 'More beats per bar', onclick: () => this.setPerBar(this.s.beatsPerBar + 1) }, icon('plus')),
         ),
       ),
     );
@@ -161,7 +162,7 @@ class PdfView {
     } catch (err) {
       console.error(err);
       this.el.overlay.hidden = false;
-      this.el.overlay.textContent = "Couldn't open this PDF.";
+      this.el.overlay.textContent = "Couldn't open this PDF";
     }
   }
 
@@ -300,7 +301,8 @@ class PdfView {
   private toggleClick(): void {
     this.metronome.toggle();
     const on = this.metronome.running;
-    this.el.start.textContent = on ? '❚❚' : '▶';
+    this.el.start.replaceChildren(icon(on ? 'stop' : 'play', 24));
+    this.el.start.classList.toggle('playing', on);
     this.el.start.setAttribute('aria-label', on ? 'Stop click' : 'Start click');
     this.el.start.setAttribute('aria-pressed', String(on));
     this.wake.set(on);

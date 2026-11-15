@@ -43,7 +43,7 @@ export function renderLibrary(root: HTMLElement, open: (id: string) => void): ()
   const empty = h(
     'div',
     { class: 'empty' },
-    h('p', {}, 'No tabs yet.'),
+    h('p', {}, 'No tabs yet'),
     h('p', { class: 'muted' }, "Tap Add tabs and pick Guitar Pro files (.gp, .gpx, .gp5 and older) or PDFs from the Files app. They're saved on this iPad and open without internet."),
   );
 
@@ -57,7 +57,7 @@ export function renderLibrary(root: HTMLElement, open: (id: string) => void): ()
     const del = h(
       'button',
       {
-        class: 'icon-btn danger',
+        class: 'btn quiet danger',
         'aria-label': `Delete ${song.title}`,
         onclick: async (e: Event) => {
           e.stopPropagation();

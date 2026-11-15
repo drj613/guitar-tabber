@@ -1,4 +1,5 @@
 import { h, holdToRepeat } from './dom';
+import { icon } from './icons';
 import { TapTempo } from './metronome';
 
 export interface TempoControlOptions {
@@ -24,8 +25,8 @@ export function createTempoControl(opts: TempoControlOptions): TempoControl {
   let base = opts.base ?? null;
 
   const slider = h('input', { type: 'range', class: 'bpm-slider', 'aria-label': 'Tempo', step: 1 });
-  const down = h('button', { class: 'btn small', 'aria-label': 'Slower' }, '−');
-  const up = h('button', { class: 'btn small', 'aria-label': 'Faster' }, '+');
+  const down = h('button', { class: 'btn small', 'aria-label': 'Slower' }, icon('minus'));
+  const up = h('button', { class: 'btn small', 'aria-label': 'Faster' }, icon('plus'));
   const num = h('button', { class: 'bpm-value' }, '');
   const note = h('span', { class: 'bpm-note' }, '');
   const tapper = new TapTempo();
