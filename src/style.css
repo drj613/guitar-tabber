@@ -923,3 +923,10 @@ button {
     transition: none !important;
   }
 }
+
+.page-error {
+  margin: 0;
+  padding: 24px;
+  color: #555;
+  text-align: center;
+}

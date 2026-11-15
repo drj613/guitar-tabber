@@ -60,11 +60,14 @@ export class Metronome {
   beatsPerBar: number;
   /** Called on the main thread close to when each click sounds. */
   onTick: ((tick: Tick) => void) | null = null;
+  /** Called when the metronome starts or stops, including when the system stops the audio. */
+  onRunningChange: ((running: boolean) => void) | null = null;
 
   private ctx: AudioContext | null = null;
   private timer: number | undefined;
   private state: ClockState = { nextTime: 0, beat: 0 };
   private pending: number[] = [];
+  private voices: OscillatorNode[] = [];
 
   constructor(bpm = 100, beatsPerBar = 4) {
     this.bpm = bpm;
@@ -82,18 +85,35 @@ export class Metronome {
     if (!this.ctx) {
       const Ctor = window.AudioContext ?? (window as WebkitWindow).webkitAudioContext;
       this.ctx = new Ctor!();
+      // A phone call, Siri or leaving the app suspends ("interrupted" on iOS) the context.
+      // Stop rather than keep showing a running metronome that makes no sound.
+      this.ctx.onstatechange = () => {
+        if (this.running && this.ctx && this.ctx.state !== 'running') this.stop();
+      };
     }
     void this.ctx.resume();
     this.state = { nextTime: this.ctx.currentTime + 0.06, beat: 0 };
     this.timer = window.setInterval(() => this.pump(), LOOKAHEAD_MS);
     this.pump();
+    this.onRunningChange?.(true);
   }
 
   stop(): void {
+    const was = this.running;
     clearInterval(this.timer);
     this.timer = undefined;
     for (const t of this.pending) clearTimeout(t);
     this.pending = [];
+    // Silence clicks already queued in the lookahead window.
+    for (const v of this.voices) {
+      try {
+        v.stop();
+      } catch {
+        /* already finished */
+      }
+    }
+    this.voices = [];
+    if (was) this.onRunningChange?.(false);
   }
 
   toggle(): void {
@@ -109,7 +129,8 @@ export class Metronome {
 
   private pump(): void {
     const ctx = this.ctx;
-    if (!ctx) return;
+    // Right after start() the context may still be resuming; wait for it.
+    if (!ctx || ctx.state !== 'running') return;
     // After the tab was suspended, skip ahead instead of firing a burst of clicks.
     if (this.state.nextTime < ctx.currentTime - 0.2) this.state.nextTime = ctx.currentTime + 0.05;
     const { ticks, state } = scheduleWindow(this.state, ctx.currentTime + SCHEDULE_AHEAD_S, this.bpm, this.beatsPerBar);
@@ -137,6 +158,10 @@ export class Metronome {
     osc.connect(gain).connect(ctx.destination);
     osc.start(tick.time);
     osc.stop(tick.time + 0.05);
+    this.voices.push(osc);
+    osc.onended = () => {
+      this.voices = this.voices.filter((v) => v !== osc);
+    };
   }
 }
 

@@ -22,6 +22,8 @@ interface PageSlot {
   /** CSS width the canvas was drawn at; redraw when the layout width changes. */
   drawnWidth: number;
   task: { cancel(): void } | null;
+  /** Bumped by every draw and release, so a stale in-flight draw knows to give up. */
+  generation: number;
 }
 
 export function renderPdfView(root: HTMLElement, song: SongMeta, bytes: Uint8Array, back: () => void): () => void {
@@ -64,6 +66,7 @@ class PdfView {
     this.s = normalizePdfSettings(song.pdf);
     this.metronome = new Metronome(this.s.bpm, this.s.beatsPerBar);
     this.metronome.onTick = (tick) => this.flashBeat(tick.beat);
+    this.metronome.onRunningChange = (on) => this.paintClick(on);
     this.build();
     void this.load();
   }
@@ -151,7 +154,7 @@ class PdfView {
         const vp = page.getViewport({ scale: 1 });
         const box = h('div', { class: 'pdf-page', 'data-page': i });
         box.style.aspectRatio = `${vp.width} / ${vp.height}`;
-        this.slots.push({ index: i, width: vp.width, height: vp.height, box, canvas: null, drawnWidth: 0, task: null });
+        this.slots.push({ index: i, width: vp.width, height: vp.height, box, canvas: null, drawnWidth: 0, task: null, generation: 0 });
         this.el.pages.append(box);
       }
       this.el.overlay.hidden = true;
@@ -168,7 +171,7 @@ class PdfView {
 
   private observe(): void {
     const root = this.el.scroller;
-    // Draw pages within a screen of the viewport; free canvases more than three screens away.
+    // Draw pages within a screen of the viewport; free canvases more than two screens away.
     this.nearObserver = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) if (entry.isIntersecting) void this.draw(this.slotFor(entry.target));
@@ -179,7 +182,7 @@ class PdfView {
       (entries) => {
         for (const entry of entries) if (!entry.isIntersecting) this.release(this.slotFor(entry.target));
       },
-      { root, rootMargin: '300% 0px' },
+      { root, rootMargin: '200% 0px' },
     );
     for (const slot of this.slots) {
       this.nearObserver.observe(slot.box);
@@ -226,7 +229,16 @@ class PdfView {
     const cssWidth = this.pageWidth();
     if (slot.canvas && slot.drawnWidth === cssWidth) return;
     slot.task?.cancel();
-    const page = await this.doc.getPage(slot.index);
+    slot.task = null;
+    const gen = ++slot.generation;
+    const stale = () => this.disposed || slot.generation !== gen;
+    let page;
+    try {
+      page = await this.doc.getPage(slot.index);
+    } catch {
+      return; // document closed
+    }
+    if (stale()) return;
     const scale = cssWidth / slot.width;
     const cssHeight = slot.height * scale;
     let ratio = Math.min(window.devicePixelRatio || 1, 2);
@@ -241,11 +253,19 @@ class PdfView {
     slot.task = task;
     try {
       await task.promise;
-    } catch {
+    } catch (err) {
       canvas.width = canvas.height = 0;
-      return; // cancelled by a newer draw or a release
+      if (!stale() && (err as Error)?.name !== 'RenderingCancelledException') {
+        console.error(err);
+        slot.task = null;
+        slot.box.replaceChildren(h('p', { class: 'page-error' }, `Page ${slot.index} couldn't be drawn`));
+      }
+      return;
+    } finally {
+      // Drop pdf.js's decoded data for this page; the canvas keeps the pixels.
+      page.cleanup();
     }
-    if (this.disposed || slot.task !== task) {
+    if (stale()) {
       canvas.width = canvas.height = 0;
       return;
     }
@@ -257,6 +277,7 @@ class PdfView {
   }
 
   private release(slot: PageSlot): void {
+    slot.generation++;
     slot.task?.cancel();
     slot.task = null;
     if (slot.canvas) {
@@ -300,7 +321,9 @@ class PdfView {
 
   private toggleClick(): void {
     this.metronome.toggle();
-    const on = this.metronome.running;
+  }
+
+  private paintClick(on: boolean): void {
     this.el.start.replaceChildren(icon(on ? 'stop' : 'play', 24));
     this.el.start.classList.toggle('playing', on);
     this.el.start.setAttribute('aria-label', on ? 'Stop click' : 'Start click');
@@ -339,7 +362,11 @@ class PdfView {
   };
 
   private onVisibility = (): void => {
-    if (document.visibilityState === 'hidden') this.flush();
+    if (document.visibilityState === 'hidden') {
+      this.flush();
+      // Timers are throttled in the background, so the click would stutter. Stop it.
+      this.metronome.stop();
+    }
   };
 
   private save(): void {
