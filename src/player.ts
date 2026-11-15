@@ -1,6 +1,8 @@
 import * as alphaTab from '@coderline/alphatab';
 import { getSong, getSongBytes, updateSong, type SongMeta } from './db';
 import { formatTime, h, toast } from './dom';
+import { preferPlaybackAudioSession } from './metronome';
+import { createTempoControl, type TempoControl } from './tempoControl';
 import { mixFor, normalizeSettings, type SongSettings, type StaveMode } from './songSettings';
 import { defaultTrack } from './importer';
 import { bpmRange, clampBpm, speedForBpm } from './tempo';
@@ -15,18 +17,6 @@ const STAVE: Record<StaveMode, alphaTab.StaveProfile> = {
 
 type Track = alphaTab.model.Track;
 type Beat = alphaTab.model.Beat;
-
-/** Lets Web Audio play with the iPad's silent switch on (Safari 17+). */
-function preferPlaybackAudioSession(): void {
-  const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
-  if (session) {
-    try {
-      session.type = 'playback';
-    } catch {
-      /* not supported */
-    }
-  }
-}
 
 export async function renderPlayer(
   root: HTMLElement,
@@ -43,6 +33,11 @@ export async function renderPlayer(
     return () => {};
   }
   void updateSong(songId, { lastOpenedAt: Date.now() });
+  if (song.kind === 'pdf') {
+    const { renderPdfView } = await import('./pdfView');
+    if (isStale()) return () => {};
+    return renderPdfView(root, song, new Uint8Array(bytes), back);
+  }
   return new PlayerView(root, song, new Uint8Array(bytes), back).dispose;
 }
 
@@ -52,10 +47,13 @@ class PlayerView {
   private score: alphaTab.model.Score | null = null;
   private baseBpm = 120;
   private currentBar = 0;
+  /** Bar the loop panel's "Use bar" buttons refer to: the last tapped bar, or the bar playing. */
+  private selectedBar = 0;
   /** Range we last sent to alphaTab, so its echo event is not mistaken for a user selection. */
   private sentRange: { startTick: number; endTick: number } | null = null;
   private wakeLock: { release(): Promise<void> } | null = null;
   private saveTimer: number | undefined;
+  private tempo: TempoControl;
 
   // elements
   private el = {
@@ -66,21 +64,15 @@ class PlayerView {
     stop: h('button', { class: 'btn transport', 'aria-label': 'Stop' }, '■'),
     time: h('span', { class: 'time' }, '0:00 / 0:00'),
     bar: h('span', { class: 'bar-pos' }, 'Bar 1'),
-    bpmSlider: h('input', { type: 'range', class: 'bpm-slider', 'aria-label': 'Tempo' }),
-    bpmValue: h('button', { class: 'bpm-value', title: 'Reset to the file tempo' }, '120'),
-    bpmDown: h('button', { class: 'btn small', 'aria-label': 'Slower' }, '−'),
-    bpmUp: h('button', { class: 'btn small', 'aria-label': 'Faster' }, '+'),
     click: h('button', { class: 'btn toggle' }, 'Click'),
     countIn: h('button', { class: 'btn toggle' }, 'Count-in'),
     loop: h('button', { class: 'btn toggle' }, 'Loop'),
-    loopFrom: h('button', { class: 'btn small', title: 'Start the loop at the current bar' }, 'From'),
-    loopTo: h('button', { class: 'btn small', title: 'End the loop at the current bar' }, 'To'),
-    loopLabel: h('span', { class: 'loop-label muted' }, 'Whole song'),
-    loopClear: h('button', { class: 'btn small', 'aria-label': 'Clear loop range' }, '×'),
+    loopRange: h('button', { class: 'btn loop-range', 'aria-label': 'Edit loop range', 'aria-haspopup': 'dialog' }, 'Set range'),
     tracksBtn: h('button', { class: 'btn' }, 'Tracks'),
     viewBtn: h('button', { class: 'btn' }, 'View'),
     drawer: h('aside', { class: 'drawer', hidden: true }),
     viewMenu: h('div', { class: 'popover', hidden: true }),
+    loopPanel: h('div', { class: 'popover loop-panel', role: 'dialog', 'aria-label': 'Loop range', hidden: true }),
   };
 
   constructor(
@@ -91,6 +83,13 @@ class PlayerView {
   ) {
     this.s = normalizeSettings(song.settings);
     this.dispose = this.dispose.bind(this);
+    this.tempo = createTempoControl({
+      min: 20,
+      max: 360,
+      value: 120,
+      base: 120,
+      onChange: (bpm) => this.setBpm(bpm),
+    });
     this.build();
     this.createApi();
   }
@@ -119,9 +118,9 @@ class PlayerView {
       'footer',
       { class: 'transport-bar' },
       h('div', { class: 'group' }, e.stop, e.play, h('div', { class: 'pos' }, e.time, e.bar)),
-      h('div', { class: 'group tempo' }, e.bpmDown, e.bpmSlider, e.bpmUp, e.bpmValue, h('span', { class: 'muted unit' }, 'BPM')),
-      h('div', { class: 'group' }, e.click, e.countIn),
-      h('div', { class: 'group' }, e.loop, e.loopFrom, e.loopTo, e.loopLabel, e.loopClear),
+      h('div', { class: 'group tempo' }, this.tempo.el),
+      h('div', { class: 'group', role: 'group', 'aria-label': 'Click' }, e.click, e.countIn),
+      h('div', { class: 'group', role: 'group', 'aria-label': 'Loop' }, e.loop, e.loopRange),
     );
 
     this.root.replaceChildren(
@@ -129,19 +128,13 @@ class PlayerView {
         'div',
         { class: 'player' },
         header,
-        h('div', { class: 'score-wrap' }, e.scroller, e.overlay, e.drawer, e.viewMenu),
+        h('div', { class: 'score-wrap' }, e.scroller, e.overlay, e.drawer, e.viewMenu, e.loopPanel),
         transport,
       ),
     );
 
     e.play.addEventListener('click', () => this.togglePlay());
     e.stop.addEventListener('click', () => this.api?.stop());
-    e.bpmSlider.addEventListener('input', () => this.setBpm(Number(e.bpmSlider.value)));
-    e.bpmDown.addEventListener('click', () => this.nudgeBpm(-1));
-    e.bpmUp.addEventListener('click', () => this.nudgeBpm(1));
-    holdToRepeat(e.bpmDown, () => this.nudgeBpm(-1));
-    holdToRepeat(e.bpmUp, () => this.nudgeBpm(1));
-    e.bpmValue.addEventListener('click', () => this.setBpm(null));
     e.click.addEventListener('click', () => {
       this.s.click = !this.s.click;
       this.applyClick();
@@ -157,15 +150,9 @@ class PlayerView {
       this.applyLoop();
       this.save();
     });
-    e.loopFrom.addEventListener('click', () => this.setLoopEdge('start'));
-    e.loopTo.addEventListener('click', () => this.setLoopEdge('end'));
-    e.loopClear.addEventListener('click', () => {
-      this.s.loopBars = null;
-      this.applyLoop();
-      this.save();
-    });
-    e.tracksBtn.addEventListener('click', () => this.toggleDrawer());
-    e.viewBtn.addEventListener('click', () => this.toggleViewMenu());
+    e.loopRange.addEventListener('click', () => this.togglePanel('loop'));
+    e.tracksBtn.addEventListener('click', () => this.togglePanel('tracks'));
+    e.viewBtn.addEventListener('click', () => this.togglePanel('view'));
     document.addEventListener('keydown', this.onKey);
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('pagehide', this.flush);
@@ -232,9 +219,16 @@ class PlayerView {
     });
     api.playerPositionChanged.on((e) => {
       this.el.time.textContent = `${formatTime(e.currentTime)} / ${formatTime(e.endTime)}`;
+      // Seeks (taps, loop jumps, stop) move the playhead without a played beat.
+      const bar = this.barAtTick(e.currentTick);
+      if (bar !== null) this.setCurrentBarIndex(bar);
     });
-    api.playedBeatChanged.on((beat) => this.setCurrentBar(beat));
-    api.beatMouseDown.on((beat) => this.setCurrentBar(beat));
+    api.playedBeatChanged.on((beat) => {
+      this.setCurrentBarIndex(beat.voice.bar.masterBar.index);
+      this.setSelectedBar(beat.voice.bar.masterBar.index);
+    });
+    // A tap selects its bar even when an active loop keeps the playhead elsewhere.
+    api.beatMouseDown.on((beat) => this.setSelectedBar(beat.voice.bar.masterBar.index));
     api.playbackRangeChanged.on((e) => {
       const range = e.playbackRange;
       const sent = this.sentRange;
@@ -273,35 +267,20 @@ class PlayerView {
 
   private setupBpmSlider(): void {
     const { min, max } = bpmRange(this.baseBpm);
-    this.el.bpmSlider.min = String(min);
-    this.el.bpmSlider.max = String(max);
-    this.el.bpmSlider.step = '1';
     if (this.s.bpm !== null) this.s.bpm = clampBpm(this.baseBpm, this.s.bpm);
-    this.updateBpmUi();
+    this.tempo.setRange(min, max, this.baseBpm);
+    this.tempo.set(this.s.bpm ?? this.baseBpm);
   }
 
-  private nudgeBpm(delta: number): void {
-    this.setBpm((this.s.bpm ?? this.baseBpm) + delta);
-  }
-
-  private setBpm(bpm: number | null): void {
-    this.s.bpm = bpm === null ? null : clampBpm(this.baseBpm, bpm);
+  private setBpm(bpm: number): void {
+    this.s.bpm = clampBpm(this.baseBpm, bpm);
     if (this.s.bpm === this.baseBpm) this.s.bpm = null;
     this.applySpeed();
-    this.updateBpmUi();
     this.save();
   }
 
   private applySpeed(): void {
     if (this.api) this.api.playbackSpeed = speedForBpm(this.baseBpm, this.s.bpm);
-  }
-
-  private updateBpmUi(): void {
-    const bpm = this.s.bpm ?? this.baseBpm;
-    this.el.bpmSlider.value = String(bpm);
-    this.el.bpmValue.textContent = String(bpm);
-    this.el.bpmValue.classList.toggle('changed', this.s.bpm !== null);
-    this.el.bpmValue.title = this.s.bpm !== null ? `Tap to reset to ${this.baseBpm} BPM` : 'File tempo';
   }
 
   // ---------- click / count-in ----------
@@ -323,14 +302,26 @@ class PlayerView {
 
   // ---------- loop ----------
 
-  private setCurrentBar(beat: Beat): void {
-    this.currentBar = beat.voice.bar.masterBar.index;
-    this.el.bar.textContent = `Bar ${this.currentBar + 1}`;
+  private setCurrentBarIndex(bar: number): void {
+    if (bar === this.currentBar) return;
+    this.currentBar = bar;
+    this.el.bar.textContent = `Bar ${bar + 1}`;
   }
 
-  private setLoopEdge(edge: 'start' | 'end'): void {
-    const bar = this.currentBar;
-    const range = this.s.loopBars ?? { start: bar, end: bar };
+  private setSelectedBar(bar: number): void {
+    if (bar === this.selectedBar) return;
+    this.selectedBar = bar;
+    if (!this.el.loopPanel.hidden) this.renderLoopPanel();
+  }
+
+  private get barCount(): number {
+    return this.score?.masterBars.length ?? 1;
+  }
+
+  /** Moves one end of the loop; the other end follows if they would cross. Turns Loop on. */
+  private setLoopEdge(edge: 'start' | 'end', bar: number): void {
+    bar = Math.min(this.barCount - 1, Math.max(0, bar));
+    const range = { ...(this.s.loopBars ?? { start: bar, end: bar }) };
     if (edge === 'start') {
       range.start = bar;
       if (range.end < bar) range.end = bar;
@@ -338,10 +329,65 @@ class PlayerView {
       range.end = bar;
       if (range.start > bar) range.start = bar;
     }
+    this.setLoopBars(range);
+  }
+
+  private setLoopBars(range: { start: number; end: number } | null): void {
     this.s.loopBars = range;
-    if (!this.s.loop) this.s.loop = true;
+    this.s.loop = range !== null;
     this.applyLoop();
     this.save();
+    if (!this.el.loopPanel.hidden) this.renderLoopPanel();
+  }
+
+  private renderLoopPanel(): void {
+    const b = this.s.loopBars;
+    const cur = this.selectedBar;
+    const edgeRow = (edge: 'start' | 'end', label: string) => {
+      const value = b ? b[edge] : null;
+      const step = (d: number) => this.setLoopEdge(edge, (value ?? cur) + d);
+      return h(
+        'div',
+        { class: 'loop-row' },
+        h('span', { class: 'loop-row-label' }, label),
+        h(
+          'div',
+          { class: 'stepper' },
+          h('button', { class: 'btn small', 'aria-label': `${label} bar earlier`, onclick: () => step(-1), disabled: value === 0 }, '−'),
+          h('span', { class: 'stepper-value', 'aria-live': 'polite' }, value === null ? '–' : `Bar ${value + 1}`),
+          h('button', { class: 'btn small', 'aria-label': `${label} bar later`, onclick: () => step(1), disabled: value === this.barCount - 1 }, '+'),
+        ),
+        h(
+          'button',
+          { class: 'btn small', 'aria-label': `${label} at current bar`, onclick: () => this.setLoopEdge(edge, cur) },
+          `Use bar ${cur + 1}`,
+        ),
+      );
+    };
+    this.el.loopPanel.replaceChildren(
+      h('div', { class: 'panel-head' }, h('strong', {}, 'Loop range')),
+      edgeRow('start', 'Start'),
+      edgeRow('end', 'End'),
+      h(
+        'div',
+        { class: 'loop-actions' },
+        h('button', { class: 'btn small', onclick: () => this.setLoopBars({ start: cur, end: cur }) }, `Loop bar ${cur + 1} only`),
+        h('button', { class: 'btn small', 'aria-label': 'Clear loop range', onclick: () => this.setLoopBars(null), disabled: !b }, 'Clear'),
+      ),
+      h('p', { class: 'hint' }, 'Tap a bar on the score to move the playhead there. With a Pencil or mouse, drag across bars to select them.'),
+    );
+  }
+
+  private togglePanel(which: 'tracks' | 'view' | 'loop'): void {
+    const panels = { tracks: this.el.drawer, view: this.el.viewMenu, loop: this.el.loopPanel };
+    const buttons = { tracks: this.el.tracksBtn, view: this.el.viewBtn, loop: this.el.loopRange };
+    const opening = panels[which].hidden;
+    for (const key of Object.keys(panels) as (keyof typeof panels)[]) {
+      panels[key].hidden = !(opening && key === which);
+      buttons[key].setAttribute('aria-expanded', String(opening && key === which));
+    }
+    if (opening && which === 'view') this.renderViewMenu();
+    if (opening && which === 'loop') this.renderLoopPanel();
   }
 
   private barAtTick(tick: number): number | null {
@@ -389,18 +435,11 @@ class PlayerView {
 
   private updateLoopUi(): void {
     const b = this.s.loopBars;
-    this.el.loopLabel.textContent = b ? (b.start === b.end ? `Bar ${b.start + 1}` : `Bars ${b.start + 1}–${b.end + 1}`) : 'Whole song';
-    this.el.loopClear.hidden = !b;
+    this.el.loopRange.textContent = b ? (b.start === b.end ? `Bar ${b.start + 1}` : `Bars ${b.start + 1}–${b.end + 1}`) : 'Set range';
+    this.el.loopRange.classList.toggle('empty', !b);
   }
 
   // ---------- tracks ----------
-
-  private toggleDrawer(): void {
-    this.el.viewMenu.hidden = true;
-    this.el.drawer.hidden = !this.el.drawer.hidden;
-    setPressed(this.el.tracksBtn, !this.el.drawer.hidden);
-    setPressed(this.el.viewBtn, false);
-  }
 
   private renderDrawer(): void {
     const score = this.score;
@@ -510,14 +549,6 @@ class PlayerView {
   }
 
   // ---------- view menu ----------
-
-  private toggleViewMenu(): void {
-    this.el.drawer.hidden = true;
-    this.el.viewMenu.hidden = !this.el.viewMenu.hidden;
-    setPressed(this.el.viewBtn, !this.el.viewMenu.hidden);
-    setPressed(this.el.tracksBtn, false);
-    if (!this.el.viewMenu.hidden) this.renderViewMenu();
-  }
 
   private renderViewMenu(): void {
     const choice = <T extends string>(label: string, current: T, options: [T, string][], set: (v: T) => void) =>
@@ -641,21 +672,6 @@ function sameRange(
 function setPressed(el: HTMLElement, on: boolean): void {
   el.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
-
-function holdToRepeat(el: HTMLElement, fn: () => void): void {
-  let delay: number | undefined;
-  let repeat: number | undefined;
-  const stop = () => {
-    clearTimeout(delay);
-    clearInterval(repeat);
-  };
-  el.addEventListener('pointerdown', () => {
-    stop();
-    delay = window.setTimeout(() => (repeat = window.setInterval(fn, 70)), 400);
-  });
-  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) el.addEventListener(ev, stop);
-}
-
 
 function trackKind(track: Track): string {
   const staff = track.staves[0];

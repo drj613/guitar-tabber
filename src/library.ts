@@ -1,6 +1,7 @@
 import { addSong, deleteSong, listSongs, type SongMeta } from './db';
 import { h, toast } from './dom';
 import { inspectScore, looksSupported } from './importer';
+import { inspectPdf, isPdf } from './pdf';
 
 export async function importFiles(files: FileList | File[]): Promise<SongMeta[]> {
   const existing = await listSongs();
@@ -12,15 +13,28 @@ export async function importFiles(files: FileList | File[]): Promise<SongMeta[]>
     }
     try {
       const buffer = await file.arrayBuffer();
-      const info = inspectScore(new Uint8Array(buffer), file.name);
-      added.push(await addSong({ fileName: file.name, size: file.size, ...info }, buffer));
+      const bytes = new Uint8Array(buffer);
+      if (isPdf(bytes)) {
+        const info = await inspectPdf(bytes, file.name);
+        added.push(await addSong({ kind: 'pdf', fileName: file.name, size: file.size, trackCount: 0, ...info }, buffer));
+      } else {
+        const info = inspectScore(bytes, file.name);
+        added.push(await addSong({ fileName: file.name, size: file.size, ...info }, buffer));
+      }
     } catch (err) {
       console.error(err);
-      const hint = looksSupported(file.name) ? 'the file looks damaged or uses an unsupported version' : 'it is not a Guitar Pro file';
+      const hint = looksSupported(file.name) || /\.pdf$/i.test(file.name)
+        ? 'the file looks damaged or uses an unsupported version'
+        : "it isn't a Guitar Pro file or a PDF";
       toast(`Couldn't open ${file.name}: ${hint}`, 5000);
     }
   }
   return added;
+}
+
+function describe(song: SongMeta): string {
+  if (song.kind === 'pdf') return `PDF, ${song.pageCount ?? '?'} page${song.pageCount === 1 ? '' : 's'}`;
+  return `${song.trackCount} track${song.trackCount === 1 ? '' : 's'}`;
 }
 
 export function renderLibrary(root: HTMLElement, open: (id: string) => void): () => void {
@@ -30,7 +44,7 @@ export function renderLibrary(root: HTMLElement, open: (id: string) => void): ()
     'div',
     { class: 'empty' },
     h('p', {}, 'No tabs yet.'),
-    h('p', { class: 'muted' }, 'Tap Add tabs and pick .gp, .gpx, .gp5 or other Guitar Pro files from the Files app. They stay on this device and open without internet.'),
+    h('p', { class: 'muted' }, "Tap Add tabs and pick Guitar Pro files (.gp, .gpx, .gp5 and older) or PDFs from the Files app. They're saved on this iPad and open without internet."),
   );
 
   async function refresh(): Promise<void> {
@@ -64,7 +78,7 @@ export function renderLibrary(root: HTMLElement, open: (id: string) => void): ()
         h(
           'span',
           { class: 'song-sub' },
-          [song.artist, `${song.trackCount} track${song.trackCount === 1 ? '' : 's'}`, song.fileName].filter(Boolean).join(' · '),
+          [song.artist, describe(song), song.fileName].filter(Boolean).join(' · '),
         ),
       ),
       del,

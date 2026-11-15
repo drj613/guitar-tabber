@@ -29,6 +29,40 @@ describe('song library', () => {
     expect(back?.settings.shownTracks).toEqual([2]);
   });
 
+  it('opens records saved before PDF support as Guitar Pro songs', async () => {
+    // Shape of a record written by the first release: no kind, no pdf settings.
+    await addSong({ fileName: 'x.gp', title: 'X', artist: '', trackCount: 1, size: 1 }, new ArrayBuffer(1));
+    const [song] = await listSongs();
+    const old: Record<string, unknown> = { ...song };
+    delete old.kind;
+    delete old.pdf;
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('guitar-tabber');
+      req.onsuccess = () => {
+        const tx = req.result.transaction('meta', 'readwrite');
+        tx.objectStore('meta').put(old);
+        tx.oncomplete = () => {
+          req.result.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+    const back = await getSong(song.id);
+    expect(back?.kind).toBe('score');
+    expect(back?.pdf.bpm).toBe(100);
+    expect(back?.settings.stave).toBe('scoretab');
+  });
+
+  it('stores PDFs with their own settings', async () => {
+    const song = await addSong({ kind: 'pdf', fileName: 'a.pdf', title: 'A', artist: '', trackCount: 0, pageCount: 3, size: 1 }, new ArrayBuffer(1));
+    await updateSong(song.id, { pdf: { ...song.pdf, bpm: 72, beatsPerBar: 3 } });
+    const back = await getSong(song.id);
+    expect(back?.kind).toBe('pdf');
+    expect(back?.pageCount).toBe(3);
+    expect(back?.pdf).toMatchObject({ bpm: 72, beatsPerBar: 3 });
+  });
+
   it('deletes both the record and the bytes', async () => {
     const song = await addSong({ fileName: 'a.gp', title: 'A', artist: '', trackCount: 1, size: 1 }, new ArrayBuffer(1));
     await deleteSong(song.id);

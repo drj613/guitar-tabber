@@ -2,18 +2,49 @@
 // "meta" holds the small records the library list needs; "files" holds the
 // raw file bytes, so listing songs never loads every file into memory.
 
-import { defaultSettings, type SongSettings } from './songSettings';
+import { defaultPdfSettings, defaultSettings, normalizePdfSettings, normalizeSettings, type PdfSettings, type SongSettings } from './songSettings';
+
+export type SongKind = 'score' | 'pdf';
 
 export interface SongMeta {
   id: string;
+  /** Records saved before PDF support have no kind; they are scores. */
+  kind: SongKind;
   fileName: string;
   title: string;
   artist: string;
   trackCount: number;
+  /** PDFs only. */
+  pageCount?: number;
   size: number;
   addedAt: number;
   lastOpenedAt: number | null;
+  /** Guitar Pro player settings (unused for PDFs). */
   settings: SongSettings;
+  /** PDF viewer and metronome settings. */
+  pdf: PdfSettings;
+}
+
+type NewSong = Omit<SongMeta, 'id' | 'addedAt' | 'lastOpenedAt' | 'settings' | 'pdf' | 'kind'> & {
+  kind?: SongKind;
+  defaultTrack?: number;
+};
+
+/** Fills in fields that older records lack. */
+export function normalizeMeta(raw: Partial<SongMeta> & { id: string }): SongMeta {
+  return {
+    fileName: '',
+    title: '',
+    artist: '',
+    trackCount: 0,
+    size: 0,
+    addedAt: 0,
+    lastOpenedAt: null,
+    ...raw,
+    kind: raw.kind ?? 'score',
+    settings: normalizeSettings(raw.settings),
+    pdf: normalizePdfSettings(raw.pdf),
+  };
 }
 
 const DB_NAME = 'guitar-tabber';
@@ -56,16 +87,15 @@ export function newId(): string {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export async function addSong(
-  info: Omit<SongMeta, 'id' | 'addedAt' | 'lastOpenedAt' | 'settings'> & { defaultTrack?: number },
-  bytes: ArrayBuffer,
-): Promise<SongMeta> {
+export async function addSong(info: NewSong, bytes: ArrayBuffer): Promise<SongMeta> {
   const db = await openDb();
   const { defaultTrack, ...rest } = info;
   const settings = defaultSettings();
   if (defaultTrack !== undefined) settings.shownTracks = [defaultTrack];
   const meta: SongMeta = {
     ...rest,
+    kind: rest.kind ?? 'score',
+    pdf: defaultPdfSettings(),
     id: newId(),
     addedAt: Date.now(),
     lastOpenedAt: null,
@@ -81,14 +111,16 @@ export async function addSong(
 export async function listSongs(): Promise<SongMeta[]> {
   const db = await openDb();
   const tx = db.transaction('meta', 'readonly');
-  const all = await result(tx.objectStore('meta').getAll() as IDBRequest<SongMeta[]>);
+  const raw = await result(tx.objectStore('meta').getAll() as IDBRequest<SongMeta[]>);
+  const all = raw.map(normalizeMeta);
   return all.sort((a, b) => (b.lastOpenedAt ?? b.addedAt) - (a.lastOpenedAt ?? a.addedAt));
 }
 
 export async function getSong(id: string): Promise<SongMeta | undefined> {
   const db = await openDb();
   const tx = db.transaction('meta', 'readonly');
-  return result(tx.objectStore('meta').get(id) as IDBRequest<SongMeta | undefined>);
+  const raw = await result(tx.objectStore('meta').get(id) as IDBRequest<SongMeta | undefined>);
+  return raw && normalizeMeta(raw);
 }
 
 export async function getSongBytes(id: string): Promise<ArrayBuffer | undefined> {

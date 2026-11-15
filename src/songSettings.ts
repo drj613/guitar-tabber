@@ -48,3 +48,22 @@ export function normalizeSettings(s: Partial<SongSettings> | undefined): SongSet
 export function mixFor(s: SongSettings, trackIndex: number): TrackMix {
   return s.mix[trackIndex] ?? { mute: false, solo: false, volume: 1 };
 }
+
+export interface PdfSettings {
+  /** Metronome tempo. */
+  bpm: number;
+  /** Beats per bar; the first beat is accented. 1 means no accent. */
+  beatsPerBar: number;
+  /** Page width as a fraction of the screen width. */
+  zoom: number;
+  /** Where the reader left off, as a fraction of the document height. */
+  scroll: number;
+}
+
+export function defaultPdfSettings(): PdfSettings {
+  return { bpm: 100, beatsPerBar: 4, zoom: 1, scroll: 0 };
+}
+
+export function normalizePdfSettings(s: Partial<PdfSettings> | undefined): PdfSettings {
+  return { ...defaultPdfSettings(), ...(s ?? {}) };
+}

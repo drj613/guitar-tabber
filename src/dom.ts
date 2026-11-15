@@ -41,3 +41,18 @@ export function formatTime(ms: number): string {
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
+
+/** Repeats `fn` while a button is held down, after a short delay. */
+export function holdToRepeat(el: HTMLElement, fn: () => void): void {
+  let delay: number | undefined;
+  let repeat: number | undefined;
+  const stop = () => {
+    clearTimeout(delay);
+    clearInterval(repeat);
+  };
+  el.addEventListener('pointerdown', () => {
+    stop();
+    delay = window.setTimeout(() => (repeat = window.setInterval(fn, 70)), 400);
+  });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) el.addEventListener(ev, stop);
+}
