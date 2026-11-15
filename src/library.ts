@@ -44,7 +44,7 @@ export function renderLibrary(root: HTMLElement, open: (id: string) => void): ()
     'div',
     { class: 'empty' },
     h('p', {}, 'No tabs yet'),
-    h('p', { class: 'muted' }, "Tap Add tabs and pick Guitar Pro files (.gp, .gpx, .gp5 and older) or PDFs from the Files app. They're saved on this iPad and open without internet."),
+    h('p', { class: 'muted' }, "Choose Add tabs and pick Guitar Pro files (.gp, .gpx, .gp5 and older) or PDFs. They're saved on this device and open without internet."),
   );
 
   async function refresh(): Promise<void> {

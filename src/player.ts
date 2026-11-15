@@ -378,7 +378,7 @@ class PlayerView {
         h('button', { class: 'btn small', onclick: () => this.setLoopBars({ start: cur, end: cur }) }, `Loop bar ${cur + 1} only`),
         h('button', { class: 'btn small quiet', 'aria-label': 'Clear loop range', onclick: () => this.setLoopBars(null), disabled: !b }, 'Clear'),
       ),
-      h('p', { class: 'hint' }, 'Tap a bar on the score to pick it, then use it as the start or end. With a Pencil or mouse, drag across bars to loop them.'),
+      h('p', { class: 'hint' }, 'Select a bar on the score, then use it as the start or end. With a mouse or stylus, you can also drag across bars to loop them.'),
     );
   }
 
@@ -486,7 +486,7 @@ class PlayerView {
         'div',
         { class: 'drawer-head' },
         h('div', { class: 'panel-head' }, h('strong', {}, 'Tracks'), closeButton(() => this.togglePanel('tracks'))),
-        h('span', { class: 'hint' }, 'Tap a name to show only that part. Muted tracks stay on screen; hidden tracks still play.'),
+        h('span', { class: 'hint' }, 'Select a name to show only that part. Muted tracks stay on screen; hidden tracks still play.'),
       ),
       h('ul', { class: 'tracks' }, ...rows),
       h(

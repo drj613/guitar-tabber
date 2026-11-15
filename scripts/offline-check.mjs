@@ -19,7 +19,7 @@ if (server) await new Promise((resolve) => server.stdout.on('data', (d) => d.toS
 const engines = { chromium, webkit };
 const engine = engines[process.env.BROWSER ?? 'chromium'];
 browser = await engine.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
-// iPad Air-ish landscape viewport with touch input.
+// Tablet-sized landscape viewport with touch input.
 const context = await browser.newContext({ viewport: { width: 1180, height: 820 }, hasTouch: true });
 const page = await context.newPage();
 const errors = [];

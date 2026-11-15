@@ -1,7 +1,7 @@
 {
   "name": "guitar-tabber",
   "version": "1.0.0",
-  "description": "Offline Guitar Pro tab player for iPad, installable from GitHub Pages",
+  "description": "Offline Guitar Pro and PDF tab player, installable from GitHub Pages",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

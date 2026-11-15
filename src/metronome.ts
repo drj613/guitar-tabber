@@ -43,7 +43,7 @@ const SCHEDULE_AHEAD_S = 0.12;
 
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 
-/** Lets Web Audio play with the iPad's silent switch on (Safari 17+). */
+/** On iPhone and iPad (Safari 17+), lets Web Audio play with the silent switch on. Other browsers ignore it. */
 export function preferPlaybackAudioSession(): void {
   const session = (navigator as unknown as { audioSession?: { type: string } }).audioSession;
   if (session) {
